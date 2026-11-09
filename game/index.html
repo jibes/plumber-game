@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, minimum-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>Pipe Runner - Isometric Platformer</title>
+    <style>
+        * { 
+            margin: 0; 
+            padding: 0; 
+            box-sizing: border-box;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        
+        body { 
+            background: #000000; 
+            overflow: hidden; 
+            touch-action: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+        
+        canvas { 
+            display: block; 
+            margin: 0 auto;
+        }
+        
+        #loading { 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%);
+            color: #00ff00;
+            font-family: 'Courier New', monospace, sans-serif;
+            text-align: center;
+            font-size: 24px;
+            text-shadow: 0 0 10px #00ff00;
+        }
+        
+        #loading::after {
+            content: '';
+            animation: blink 1s infinite;
+            display: inline-block;
+            width: 1em;
+            height: 1em;
+            background: #00ff00;
+            margin-left: 0.5em;
+            border-radius: 50%;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Loading Pipe Runner</div>
+    
+    <!-- Load Phaser from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
+    
+    <!-- Game scripts -->
+    <script src="src/utils/IsoUtils.js"></script>
+    <script src="src/scenes/SceneLoader.js"></script>
+    <script src="src/scenes/SceneTitle.js"></script>
+    <script src="src/scenes/SceneGame.js"></script>
+    <script src="src/scenes/SceneLevelComplete.js"></script>
+    <script src="src/scenes/SceneGameOver.js"></script>
+    <script src="src/boot.js"></script>
+</body>
+</html>

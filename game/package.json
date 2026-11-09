@@ -1,0 +1,39 @@
+{
+  "name": "pipe-runner",
+  "version": "1.0.0",
+  "description": "Isometric platformer game - Pipe Runner. A free, open-source game inspired by classic Game Boy platformers.",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve . -p 3000",
+    "dev": "npx serve . -p 3000",
+    "build": "npm run build:web",
+    "build:web": "mkdir -p build/web && cp -r index.html src build/web/ && echo 'Web build ready in build/web/'",
+    "build:android": "cd cordova && cordova build android --release",
+    "build:all": "npm run build:web && npm run build:android",
+    "serve": "npm run start",
+    "deploy:gh": "npm run build:web && echo 'Deploy build/web/ to gh-pages branch'",
+    "clean": "rm -rf build/ node_modules/ cordova/node_modules/ cordova/platforms/"
+  },
+  "keywords": [
+    "game",
+    "phaser",
+    "isometric",
+    "platformer",
+    "html5",
+    "mobile",
+    "android"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "serve": "^14.2.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jibes/plumber-game.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jibes/plumber-game/issues"
+  },
+  "homepage": "https://jibes.github.io/plumber-game/"
+}

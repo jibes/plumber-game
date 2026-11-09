@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget id="com.jibes.piperunner" version="1.0.0" xmlns="http://www.w3.org/ns/widgets" xmlns:cdv="http://cordova.apache.org/ns/1.0">
+    <name>Pipe Runner</name>
+    <description>Isometric platformer game inspired by classic Game Boy games</description>
+    <author email="" href="">Jibes</author>
+    <content src="index.html" />
+    <access origin="*" />
+    <allow-intent href="http://*/*" />
+    <allow-intent href="https://*/*" />
+    <preference name="Orientation" value="landscape" />
+    <preference name="Fullscreen" value="true" />
+    <preference name="WebViewBounce" value="false" />
+    <preference name="UIWebViewBounce" value="false" />
+    <preference name="DisallowOverscroll" value="true" />
+    <preference name="android-minSdkVersion" value="21" />
+    <preference name="android-targetSdkVersion" value="30" />
+    <edit-config file="app/src/main/AndroidManifest.xml" mode="merge">
+        <application android:usesCleartextTraffic="true" />
+    </edit-config>
+    <platform name="android">
+        <allow-intent href="market:*" />
+    </platform>
+</widget>

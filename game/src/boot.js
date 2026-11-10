@@ -8,7 +8,8 @@ window.addEventListener('load', () => {
         backgroundColor: '#000000',
         parent: 'game-container',
         audio: { noAudio: true }, // all sound is synthesised in audio.js
-        scene: [SceneLoader, SceneTitle, SceneGame, SceneLevelComplete, SceneGameOver],
+        input: { gamepad: true },
+        scene: [SceneLoader, SceneTitle, SceneLevelSelect, SceneGame, SceneLevelComplete, SceneGameOver],
         scale: {
             mode: Phaser.Scale.FIT,
             autoCenter: Phaser.Scale.CENTER_BOTH

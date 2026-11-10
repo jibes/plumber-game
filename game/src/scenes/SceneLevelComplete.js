@@ -1,4 +1,4 @@
-// SceneLevelComplete - score breakdown between levels
+// SceneLevelComplete - score breakdown, stars, and saving progress
 
 class SceneLevelComplete extends Phaser.Scene {
     constructor() {
@@ -6,36 +6,63 @@ class SceneLevelComplete extends Phaser.Scene {
     }
 
     init(data) {
-        this.result = {
-            level: data.level || 1,
-            score: data.score || 0,
-            timeLeft: data.timeLeft || 0,
-            coins: data.coins || 0,
-            totalCoins: data.totalCoins || 0,
-            timeBonus: data.timeBonus || 0,
-            coinBonus: data.coinBonus || 0
-        };
+        this.result = data;
     }
 
     create() {
-        const d = this.result;
+        const r = this.result;
         const w = CONFIG.width;
-        const last = d.level >= LEVELS.length;
+        const last = r.level >= LEVELS.length;
+        const level = LEVELS[r.level - 1];
+        const starCount = r.stars.filter(Boolean).length;
+        const saved = Progress.record(r.level, starCount, r.score);
+        UI.backdrop(this);
         this.cameras.main.fadeIn(300);
 
-        UI.text(this, w / 2, 90, last ? 'ALL LEVELS COMPLETE!' : 'LEVEL COMPLETE!', 44, '#00ff00');
-        UI.text(this, w / 2, 160, `Level ${d.level}: ${LEVELS[d.level - 1].name}`, 22, '#ffffff');
-        UI.text(this, w / 2, 220, `Time Left: ${d.timeLeft}s   Time Bonus: +${d.timeBonus}`, 20, '#00ffff');
-        UI.text(this, w / 2, 260, `Power Cores: ${d.coins}/${d.totalCoins}   Core Bonus: +${d.coinBonus}`, 20, '#ff00ff');
-        UI.text(this, w / 2, 330, `Score: ${d.score}`, 36, '#ffff00');
-        if (!last) UI.text(this, w / 2, 400, `Next: ${LEVELS[d.level].name}`, 20, '#00ff00');
+        UI.text(this, w / 2, 70, last ? 'STATION RESTORED!' : 'LEVEL COMPLETE!', 44, '#00ff00');
+        UI.text(this, w / 2, 120, `${r.level}. ${level.name}`, 22, '#ffffff');
 
-        const cont = UI.text(this, w / 2, CONFIG.height - 100, last ? 'BACK TO MENU' : 'CONTINUE', 32, '#00ffff');
+        // Stars pop in one by one
+        const labels = ['Complete', 'Secret gear', `Under ${level.par}s`];
+        r.stars.forEach((earned, i) => {
+            const x = w / 2 + (i - 1) * 130;
+            const star = this.add.image(x, 200, 'star').setScale(0).setTint(earned ? 0xffffff : 0x333333);
+            UI.text(this, x, 250, labels[i], 14, earned ? '#ffd700' : '#666666', false);
+            this.tweens.add({
+                targets: star, scale: 1.6, duration: 350, delay: 300 + i * 350, ease: 'Back.easeOut',
+                onStart: () => earned && Sfx.play('star', i)
+            });
+        });
+
+        const lines = [
+            [`Time ${r.elapsed.toFixed(1)}s   Time bonus +${r.timeBonus}`, '#00ffff'],
+            [r.noDamageBonus ? `No damage bonus +${r.noDamageBonus}` : 'Took damage - no bonus', r.noDamageBonus ? '#ff66ff' : '#666666']
+        ];
+        lines.forEach(([str, color], i) => UI.text(this, w / 2, 300 + i * 30, str, 18, color, false));
+
+        const scoreText = UI.text(this, w / 2, 385, 'SCORE 0', 38, '#ffff00');
+        this.tweens.addCounter({
+            from: 0, to: r.score, duration: 900, delay: 1300, ease: 'Cubic.easeOut',
+            onUpdate: (t) => scoreText.setText(`SCORE ${Math.round(t.getValue())}`),
+            onComplete: () => {
+                if (saved.newBest) {
+                    const best = UI.text(this, w / 2, 425, 'NEW BEST!', 22, '#ff3366');
+                    this.tweens.add({ targets: best, scale: 1.2, duration: 300, yoyo: true, repeat: -1 });
+                }
+            }
+        });
+
+        const touch = this.sys.game.device.input.touch;
+        const next = last ? 'LEVEL SELECT' : 'NEXT LEVEL';
+        const cont = UI.text(this, w / 2, 500, touch ? `TAP: ${next}` : `SPACE: ${next}`, 28, '#00ffff');
         UI.blink(this, cont);
+        UI.text(this, w / 2, 550, touch ? 'tap left half to replay' : 'R replay · Esc level select', 15, '#888888', false);
 
-        UI.onInput(this, ['SPACE', 'ENTER'], () => {
-            if (last) UI.leave(this, 'SceneTitle');
-            else UI.leave(this, 'SceneGame', { level: d.level + 1, score: d.score });
-        }, 600);
+        const goNext = () => last ? UI.leave(this, 'SceneLevelSelect') : UI.leave(this, 'SceneGame', { level: r.level + 1 });
+        UI.onInput(this, ['SPACE', 'ENTER', 'R', 'ESC'], (key, pointer) => {
+            if (key === 'R' || (pointer && pointer.x < w / 2)) UI.leave(this, 'SceneGame', { level: r.level });
+            else if (key === 'ESC') UI.leave(this, 'SceneLevelSelect');
+            else goNext();
+        }, 800);
     }
 }

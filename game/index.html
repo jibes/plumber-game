@@ -6,6 +6,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <title>Pipe Runner - Isometric Platformer</title>
+    <link rel="icon" href="data:,">
     <style>
         * { 
             margin: 0; 
@@ -15,6 +16,11 @@
             user-select: none;
         }
         
+        html, body {
+            width: 100%;
+            height: 100%;
+        }
+
         body { 
             background: #000000; 
             overflow: hidden; 
@@ -59,11 +65,16 @@
 <body>
     <div id="loading">Loading Pipe Runner</div>
     
-    <!-- Load Phaser from CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/phaser@3.80.1/dist/phaser.min.js"></script>
-    
-    <!-- Game scripts -->
+    <div id="game-container"></div>
+
+    <!-- Phaser is vendored by `npm install` (postinstall) so the game also works offline / in the APK -->
+    <script src="vendor/phaser.min.js"></script>
+
+    <script src="src/config.js"></script>
+    <script src="src/levels.js"></script>
+    <script src="src/audio.js"></script>
     <script src="src/utils/IsoUtils.js"></script>
+    <script src="src/scenes/ui.js"></script>
     <script src="src/scenes/SceneLoader.js"></script>
     <script src="src/scenes/SceneTitle.js"></script>
     <script src="src/scenes/SceneGame.js"></script>

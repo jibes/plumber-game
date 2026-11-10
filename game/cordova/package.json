@@ -1,21 +1,19 @@
 {
   "name": "pipe-runner-cordova",
   "version": "1.0.0",
-  "description": "Pipe Runner - Android APK build",
-  "main": "index.html",
+  "private": true,
+  "description": "Pipe Runner - Android APK build. Run `npm run build:android` from game/, not from here.",
   "scripts": {
-    "build": "cordova build android --release",
-    "build:debug": "cordova build android",
-    "run": "cordova run android",
-    "prepare": "cordova prepare android"
+    "build": "cordova build android",
+    "build:release": "cordova build android --release",
+    "run": "cordova run android"
   },
-  "dependencies": {},
   "devDependencies": {
     "cordova": "^12.0.0",
-    "cordova-android": "^11.0.0"
+    "cordova-android": "^14.0.0"
   },
   "cordova": {
     "platforms": ["android"],
-    "plugins": []
+    "plugins": {}
   }
 }

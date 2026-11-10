@@ -1,771 +1,513 @@
-// SceneGame - Main gameplay scene
+// SceneGame - grid-based isometric gameplay.
+// World state lives in cartesian tile space (x, y) plus height z; sprites are projected each frame.
 
 class SceneGame extends Phaser.Scene {
     constructor() {
         super({ key: 'SceneGame' });
-        this.levelData = null;
-        this.player = null;
-        this.cursors = null;
-        this.touchControls = null;
-        this.score = 0;
-        this.timeLeft = 120;
-        this.timer = null;
-        this.scoreText = null;
-        this.timeText = null;
-        this.currentLevel = 1;
-        this.coinsCollected = 0;
-        this.totalCoins = 0;
-        this.gameOver = false;
-        this.victory = false;
     }
 
+    // Scene instances are reused between runs, so every piece of per-run state is reset here.
     init(data) {
-        this.currentLevel = data.level || 1;
+        this.levelNumber = data.level || 1;
         this.score = data.score || 0;
+        this.levelStartScore = this.score;
+        this.level = parseLevel(LEVELS[this.levelNumber - 1]);
+        this.state = 'playing'; // playing | falling | over | done
+        this.health = CONFIG.maxHealth;
+        this.timeLeft = this.level.time;
+        this.coinsCollected = 0;
+        this.invulnerableMs = 0;
+        this.portalActive = false;
+        this.portalWarned = false;
+        this.jumpQueued = false;
+        this.stickId = null;
+        this.touchVec = { x: 0, y: 0 };
     }
 
     create() {
-        // Load level data
-        this.loadLevel(this.currentLevel);
-        
-        // Create isometric world
-        this.createWorld();
-        
-        // Create UI
-        this.createUI();
-        
-        // Create player
+        this.buildWorld();
         this.createPlayer();
-        
-        // Create controls
-        this.createControls();
-        
-        // Create objects and enemies
-        this.createObjects();
         this.createEnemies();
-        
-        // Setup camera
-        this.setupCamera();
-        
-        // Setup collisions
-        this.setupCollisions();
-        
-        // Start timer
-        this.startTimer();
-        
-        // Fade in
-        this.cameras.main.fadeIn(500);
+        this.createHUD();
+        this.createInput();
+
+        this.cameras.main.setRoundPixels(true);
+        this.cameras.main.startFollow(this.player.shadow, true, 0.12, 0.12);
+        this.cameras.main.fadeIn(400);
+
+        Sfx.startMusic();
+        this.events.once('shutdown', () => Sfx.stopMusic());
     }
 
-    loadLevel(levelNum) {
-        // Use cached level data or load from cache
-        const cacheKey = `level_${levelNum}`;
-        if (this.cache.json.has(cacheKey)) {
-            this.levelData = this.cache.json.get(cacheKey);
-        } else {
-            // Fallback to generated level
-            this.levelData = this.generateLevel(levelNum);
-        }
-        
-        // Count total collectibles
-        this.totalCoins = this.levelData.objects.filter(o => o.type === 'coin').length;
+    // ---------- World ----------
+
+    tileAt(x, y) {
+        const row = this.level.grid[Math.floor(y)];
+        const tile = row && row[Math.floor(x)];
+        return tile === undefined ? '#' : tile;
     }
 
-    generateLevel(levelNum) {
-        // Generate a simple level programmatically
-        const size = 10 + levelNum * 2;
-        const data = {
-            size: { width: size, height: size },
-            tiles: [],
-            objects: [],
-            enemies: [],
-            start: { x: 1, y: 1 },
-            exit: { x: size - 2, y: size - 2 }
-        };
+    buildWorld() {
+        const { grid, coins, exit } = this.level;
 
-        // Create floor tiles
-        for (let x = 0; x < size; x++) {
-            for (let y = 0; y < size; y++) {
-                // Create a checkerboard pattern for floor
-                if (x >= 1 && x < size - 1 && y >= 1 && y < size - 1) {
-                    data.tiles.push({
-                        x: x,
-                        y: y,
-                        type: (x + y) % 2 === 0 ? 'floor1' : 'floor2',
-                        solid: true
-                    });
-                }
-                // Add some walls
-                if (x === 0 || x === size - 1 || y === 0 || y === size - 1) {
-                    if (!(x === data.start.x && y === data.start.y) && 
-                        !(x === data.exit.x && y === data.exit.y)) {
-                        data.tiles.push({
-                            x: x,
-                            y: y,
-                            type: 'wall',
-                            solid: true
-                        });
-                    }
-                }
+        grid.forEach((row, y) => row.forEach((tile, x) => {
+            if (tile === ' ') return;
+            const p = IsoUtils.cartToIso(x + 0.5, y + 0.5);
+            if (tile === '#') {
+                this.add.image(p.x, p.y, 'tiles', 2).setOrigin(0.5, 0.75)
+                    .setDepth(IsoUtils.actorDepth(x + 0.5, y + 0.5));
+            } else {
+                this.add.image(p.x, p.y, 'tiles', (x + y) % 2).setOrigin(0.5, 0.625)
+                    .setDepth(IsoUtils.floorDepth(x, y));
             }
-        }
+        }));
 
-        // Add platforms
-        if (levelNum >= 2) {
-            data.tiles.push({ x: 3, y: 3, type: 'floor1', solid: true });
-            data.tiles.push({ x: 4, y: 3, type: 'floor1', solid: true });
-            data.tiles.push({ x: 5, y: 3, type: 'floor1', solid: true });
-        }
-
-        // Add coins
-        for (let i = 0; i < levelNum * 3; i++) {
-            const angle = (i / (levelNum * 3)) * Math.PI * 2;
-            const radius = Math.floor(size / 3);
-            const cx = Math.floor(size / 2);
-            const cy = Math.floor(size / 2);
-            const x = cx + Math.floor(Math.cos(angle) * radius);
-            const y = cy + Math.floor(Math.sin(angle) * radius);
-            
-            // Make sure coin is on a solid tile
-            const existingTile = data.tiles.find(t => t.x === x && t.y === y && t.solid);
-            if (existingTile) {
-                data.objects.push({ x: x, y: y, type: 'coin', collected: false });
-            }
-        }
-
-        // Add enemies
-        if (levelNum >= 1) {
-            data.enemies.push({ x: 2, y: 2, type: 'drone', patrol: [{x: 2, y: 2}, {x: 4, y: 2}] });
-        }
-        if (levelNum >= 2) {
-            data.enemies.push({ x: 5, y: 5, type: 'blob', patrol: [{x: 5, y: 5}, {x: 5, y: 7}] });
-        }
-
-        // Add exit portal
-        data.objects.push({ x: data.exit.x, y: data.exit.y, type: 'portal' });
-
-        return data;
-    }
-
-    createWorld() {
-        this.tileGroup = this.add.group();
-        this.objectGroup = this.add.group();
-        this.enemyGroup = this.add.group();
-        this.effectGroup = this.add.group();
-
-        // Draw tiles
-        this.levelData.tiles.forEach(tile => {
-            this.createTile(tile.x, tile.y, tile.type, tile.solid);
+        this.coins = coins.map(c => {
+            const x = c.x + 0.5, y = c.y + 0.5;
+            const p = IsoUtils.cartToIso(x, y, 0.6);
+            const sprite = this.add.sprite(p.x, p.y, 'objects', 0).setScale(0.6)
+                .setDepth(IsoUtils.actorDepth(x, y)).play('core_spin');
+            this.tweens.add({ targets: sprite, y: p.y - 6, duration: 600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+            return { x, y, sprite, collected: false };
         });
+
+        const ex = exit.x + 0.5, ey = exit.y + 0.5;
+        const p = IsoUtils.cartToIso(ex, ey, 0.75);
+        this.portal = {
+            x: ex,
+            y: ey,
+            sprite: this.add.sprite(p.x, p.y, 'objects', 4).setScale(0.9).setAlpha(0.3)
+                .setDepth(IsoUtils.actorDepth(ex, ey)).play('portal_spin')
+        };
     }
 
-    createTile(x, y, type, solid) {
-        const isoPos = IsoUtils.cartToIso(x, y);
-        
-        let frame = 0;
-        switch(type) {
-            case 'floor1': frame = 0; break;
-            case 'floor2': frame = 1; break;
-            case 'wall': frame = 2; break;
-            case 'pipe': frame = 3; break;
-            default: frame = 0;
-        }
-
-        const tile = this.add.sprite(isoPos.x, isoPos.y, 'tiles', frame);
-        tile.setDepth(IsoUtils.getDepth(x, y));
-        tile.setData({ x: x, y: y, type: type, solid: solid, isoX: isoPos.x, isoY: isoPos.y });
-        
-        if (solid) {
-            tile.setData('collidable', true);
-        }
-        
-        this.tileGroup.add(tile);
-        return tile;
-    }
+    // ---------- Player ----------
 
     createPlayer() {
-        const start = this.levelData.start;
-        const isoPos = IsoUtils.cartToIso(start.x, start.y, 0);
-        
-        this.player = this.physics.add.sprite(isoPos.x, isoPos.y, 'player');
-        this.player.setDepth(IsoUtils.getDepth(start.x, start.y) + 1);
-        this.player.setData({
-            x: start.x,
-            y: start.y,
-            cartX: start.x,
-            cartY: start.y,
-            speed: CONFIG.playerSpeed,
-            jumping: false,
-            canJump: false,
-            health: 3,
-            invulnerable: false,
-            invulnerableTimer: 0
-        });
-        
-        this.player.setCollideWorldBounds(true);
-        this.player.setGravityY(CONFIG.gravity);
-        
-        // Player animations
-        this.player.play('player_idle');
-        
-        // Shadow
-        this.playerShadow = this.add.sprite(isoPos.x + 8, isoPos.y + 16, 'tiles', 0);
-        this.playerShadow.setDepth(IsoUtils.getDepth(start.x, start.y));
-        this.playerShadow.setAlpha(0.5);
-        this.playerShadow.setTint(0x000000);
-        this.playerShadow.setScale(0.8);
-        
-        this.playerGroup = this.add.group([this.player, this.playerShadow]);
+        const { start } = this.level;
+        const x = start.x + 0.5, y = start.y + 0.5;
+        this.player = {
+            x, y, z: 0, vz: 0,
+            lastSafe: { x, y },
+            shadow: this.add.image(0, 0, 'shadow'),
+            sprite: this.add.sprite(0, 0, 'player', 0).setOrigin(0.5, 0.875).setScale(0.8).play('player_idle')
+        };
+        this.syncPlayer();
     }
 
-    createObjects() {
-        this.levelData.objects.forEach(obj => {
-            this.createObject(obj);
-        });
+    syncPlayer() {
+        const P = this.player;
+        const ground = IsoUtils.cartToIso(P.x, P.y);
+        const depth = IsoUtils.actorDepth(P.x, P.y);
+        P.shadow.setPosition(ground.x, ground.y).setDepth(depth - 1)
+            .setVisible(this.tileAt(P.x, P.y) === '.')
+            .setScale(1 - Math.min(P.z, 1) * 0.4);
+        P.sprite.setPosition(ground.x, ground.y - P.z * CONFIG.zScale).setDepth(depth);
     }
 
-    createObject(data) {
-        const isoPos = IsoUtils.cartToIso(data.x, data.y, 0);
-        
-        let sprite, frame = 0;
-        
-        switch(data.type) {
-            case 'coin':
-                sprite = this.physics.add.sprite(isoPos.x, isoPos.y, 'objects', 0);
-                sprite.play('core_spin');
-                sprite.setData({ ...data, collected: false });
-                break;
-            case 'portal':
-                sprite = this.add.sprite(isoPos.x, isoPos.y, 'objects', 4);
-                sprite.play('portal_spin');
-                sprite.setData({ ...data });
-                break;
-            default:
-                sprite = this.add.sprite(isoPos.x, isoPos.y, 'objects', 0);
-                sprite.setData({ ...data });
+    hitsWall(x, y) {
+        const r = CONFIG.playerRadius;
+        return this.tileAt(x - r, y - r) === '#' || this.tileAt(x + r, y - r) === '#' ||
+               this.tileAt(x - r, y + r) === '#' || this.tileAt(x + r, y + r) === '#';
+    }
+
+    readInput() {
+        const k = this.keys;
+        let sx = (k.right.isDown || k.d.isDown ? 1 : 0) - (k.left.isDown || k.a.isDown ? 1 : 0);
+        let sy = (k.down.isDown || k.s.isDown ? 1 : 0) - (k.up.isDown || k.w.isDown ? 1 : 0);
+        if (Math.hypot(this.touchVec.x, this.touchVec.y) > 0.25) {
+            sx = this.touchVec.x;
+            sy = this.touchVec.y;
         }
-        
-        sprite.setDepth(IsoUtils.getDepth(data.x, data.y) + 1);
-        sprite.setData('cartX', data.x);
-        sprite.setData('cartY', data.y);
-        
-        this.objectGroup.add(sprite);
-        return sprite;
+        const jump = Phaser.Input.Keyboard.JustDown(k.jump) || this.jumpQueued;
+        this.jumpQueued = false;
+        return { sx, sy, jump };
     }
+
+    updatePlayer(dt) {
+        const P = this.player;
+        const input = this.readInput();
+
+        // Screen-relative input -> cartesian direction (screen right = +x -y, screen down = +x +y)
+        let dx = input.sx + input.sy;
+        let dy = input.sy - input.sx;
+        const len = Math.hypot(dx, dy);
+        if (len > 0) { dx /= len; dy /= len; }
+
+        const step = CONFIG.playerSpeed * dt;
+        if (!this.hitsWall(P.x + dx * step, P.y)) P.x += dx * step;
+        if (!this.hitsWall(P.x, P.y + dy * step)) P.y += dy * step;
+
+        if (input.jump && P.z === 0) {
+            P.vz = CONFIG.jumpVelocity;
+            Sfx.play('jump');
+        }
+        if (P.z > 0 || P.vz > 0) {
+            P.vz -= CONFIG.gravity * dt;
+            P.z = Math.max(0, P.z + P.vz * dt);
+            if (P.z === 0) P.vz = 0;
+        }
+
+        if (P.z === 0) {
+            if (this.tileAt(P.x, P.y) === ' ') {
+                this.fallIntoPit();
+                return;
+            }
+            P.lastSafe = { x: Math.floor(P.x) + 0.5, y: Math.floor(P.y) + 0.5 };
+        }
+
+        const anim = P.z > 0 ? 'player_jump' : (len > 0 ? 'player_run' : 'player_idle');
+        if (P.sprite.anims.getName() !== anim) P.sprite.play(anim);
+        const screenDx = dx - dy;
+        if (screenDx > 0.01) P.sprite.setFlipX(false);
+        if (screenDx < -0.01) P.sprite.setFlipX(true);
+
+        this.syncPlayer();
+    }
+
+    fallIntoPit() {
+        const P = this.player;
+        this.state = 'falling';
+        Sfx.play('fall');
+        P.shadow.setVisible(false);
+        P.sprite.setDepth(IsoUtils.floorDepth(Math.floor(P.x), Math.floor(P.y)) - 0.5);
+
+        this.tweens.add({
+            targets: P.sprite,
+            y: P.sprite.y + 90,
+            scale: 0.3,
+            alpha: 0,
+            duration: 500,
+            ease: 'Quad.easeIn',
+            onComplete: () => {
+                if (this.loseHealth('Fell into a pit')) return;
+                P.x = P.lastSafe.x;
+                P.y = P.lastSafe.y;
+                P.z = 0;
+                P.vz = 0;
+                P.sprite.setScale(0.8).setAlpha(1);
+                this.syncPlayer();
+                this.state = 'playing';
+            }
+        });
+    }
+
+    // Returns true when the hit ended the run.
+    loseHealth(reason) {
+        this.health--;
+        this.updateHUD();
+        if (this.health <= 0) {
+            this.endRun(reason);
+            return true;
+        }
+        this.invulnerableMs = CONFIG.invulnerableMs;
+        return false;
+    }
+
+    updateInvulnerability(delta) {
+        if (this.invulnerableMs <= 0) return;
+        this.invulnerableMs -= delta;
+        const visible = this.invulnerableMs <= 0 || Math.floor(this.invulnerableMs / 100) % 2 === 0;
+        this.player.sprite.setAlpha(visible ? 1 : 0.3);
+    }
+
+    // ---------- Enemies ----------
 
     createEnemies() {
-        this.levelData.enemies.forEach(enemyData => {
-            this.createEnemy(enemyData);
+        this.enemies = this.level.enemies.map(e => {
+            const drone = e.type === 'drone';
+            return {
+                type: e.type,
+                x: e.x + 0.5,
+                y: e.y + 0.5,
+                axis: drone ? 'x' : 'y',
+                dir: 1,
+                speed: drone ? 1.8 : 1.1,
+                hover: drone ? 0.35 : 0,
+                bob: Math.random() * Math.PI * 2,
+                alive: true,
+                sprite: this.add.sprite(0, 0, 'enemies', drone ? 0 : 4).setOrigin(0.5, 0.875)
+                    .setScale(0.85).play(drone ? 'drone_move' : 'blob_move')
+            };
+        });
+        this.enemies.forEach(e => this.syncEnemy(e));
+    }
+
+    updateEnemies(dt) {
+        this.enemies.forEach(e => {
+            if (!e.alive) return;
+            const next = e[e.axis] + e.dir * e.speed * dt;
+            const lead = next + e.dir * 0.5;
+            const tile = e.axis === 'x' ? this.tileAt(lead, e.y) : this.tileAt(e.x, lead);
+            if (tile === '.') e[e.axis] = next;
+            else e.dir *= -1;
+            e.bob += dt * 4;
+            e.sprite.setFlipX(e.axis === 'x' ? e.dir < 0 : e.dir > 0);
+            this.syncEnemy(e);
         });
     }
 
-    createEnemy(data) {
-        const startPos = data.patrol[0];
-        const isoPos = IsoUtils.cartToIso(startPos.x, startPos.y, 0);
-        
-        let frame = 0;
-        let animKey = 'drone_move';
-        
-        switch(data.type) {
-            case 'drone':
-                frame = 0;
-                animKey = 'drone_move';
-                break;
-            case 'blob':
-                frame = 4;
-                animKey = 'blob_move';
-                break;
-        }
-        
-        const enemy = this.physics.add.sprite(isoPos.x, isoPos.y, 'enemies', frame);
-        enemy.play(animKey);
-        enemy.setDepth(IsoUtils.getDepth(startPos.x, startPos.y) + 1);
-        enemy.setData({
-            ...data,
-            cartX: startPos.x,
-            cartY: startPos.y,
-            currentPatrolIndex: 0,
-            patrolTimer: 0,
-            patrolSpeed: 1,
-            direction: 1,
-            health: 1
-        });
-        
-        this.enemyGroup.add(enemy);
-        return enemy;
+    syncEnemy(e) {
+        const z = e.hover + (e.type === 'drone' ? Math.sin(e.bob) * 0.08 : 0);
+        const p = IsoUtils.cartToIso(e.x, e.y, z);
+        e.sprite.setPosition(p.x, p.y).setDepth(IsoUtils.actorDepth(e.x, e.y));
     }
 
-    createUI() {
-        // Score
-        this.scoreText = this.add.text(16, 16, `Score: ${this.score}`, {
-            font: '20px monospace',
-            fill: '#00ff00'
-        });
-        this.scoreText.setDepth(1000);
-        
-        // Time
-        this.timeText = this.add.text(16, 48, `Time: ${this.timeLeft}s`, {
-            font: '20px monospace',
-            fill: '#00ffff'
-        });
-        this.timeText.setDepth(1000);
-        
-        // Level
-        this.levelText = this.add.text(CONFIG.width - 150, 16, `Level: ${this.currentLevel}`, {
-            font: '20px monospace',
-            fill: '#ff00ff'
-        });
-        this.levelText.setDepth(1000);
-        
-        // Coins
-        this.coinText = this.add.text(CONFIG.width - 150, 48, `Cores: ${this.coinsCollected}/${this.totalCoins}`, {
-            font: '20px monospace',
-            fill: '#ffff00'
-        });
-        this.coinText.setDepth(1000);
-        
-        // Touch controls placeholder
-        if (this.sys.game.device.os.desktop === false) {
-            this.add.rectangle(CONFIG.width - 100, CONFIG.height - 50, 80, 80, 0x333333, 0.5)
-                .setDepth(1000);
-            this.add.text(CONFIG.width - 100, CONFIG.height - 50, 'JUMP', {
-                font: '16px monospace',
-                fill: '#ffffff'
-            }).setOrigin(0.5).setDepth(1001);
+    checkEnemies() {
+        const P = this.player;
+        for (const e of this.enemies) {
+            if (!e.alive) continue;
+            if (Math.hypot(P.x - e.x, P.y - e.y) > 0.6 || Math.abs(P.z - e.hover) > 0.8) continue;
+
+            if (P.vz < 0 && P.z > e.hover + 0.1) {
+                this.stomp(e);
+            } else if (this.invulnerableMs <= 0) {
+                Sfx.play('hurt');
+                this.cameras.main.shake(200, 0.01);
+                P.sprite.setTint(0xff4444);
+                this.time.delayedCall(200, () => P.sprite.clearTint());
+                if (this.loseHealth(e.type === 'drone' ? 'Zapped by a Spark Drone' : 'Slimed by a Leak Blob')) return;
+            }
         }
     }
 
-    createControls() {
-        // Keyboard controls
-        this.cursors = this.input.keyboard.createCursorKeys();
-        
-        // Touch controls for mobile
-        if (this.sys.game.device.os.desktop === false) {
-            this.setupTouchControls();
-        }
-    }
-
-    setupTouchControls() {
-        // Create touch zones
-        const touch = this.input;
-        
-        // Left side for movement
-        const moveZone = this.add.zone(0, 0, CONFIG.width / 2, CONFIG.height)
-            .setInteractive()
-            .setDepth(1000)
-            .setAlpha(0.01);
-        
-        // Right side for jump
-        const jumpZone = this.add.zone(CONFIG.width / 2, 0, CONFIG.width / 2, CONFIG.height)
-            .setInteractive()
-            .setDepth(1000)
-            .setAlpha(0.01);
-        
-        let touchX = 0, touchY = 0;
-        let isTouching = false;
-        
-        moveZone.on('pointerdown', (pointer) => {
-            isTouching = true;
-            touchX = pointer.x;
-            touchY = pointer.y;
-        });
-        
-        moveZone.on('pointermove', (pointer) => {
-            if (isTouching) {
-                touchX = pointer.x;
-                touchY = pointer.y;
-            }
-        });
-        
-        moveZone.on('pointerup', () => {
-            isTouching = false;
-            this.touchMove = { x: 0, y: 0 };
-        });
-        
-        jumpZone.on('pointerdown', () => {
-            this.touchJump = true;
-        });
-        
-        jumpZone.on('pointerup', () => {
-            this.touchJump = false;
-        });
-        
-        // Store touch state
-        this.touchMove = { x: 0, y: 0 };
-        this.touchJump = false;
-    }
-
-    setupCamera() {
-        this.cameras.main.setBounds(0, 0, CONFIG.width * 2, CONFIG.height * 2);
-        this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
-    }
-
-    setupCollisions() {
-        // Player vs tiles
-        this.physics.add.collider(this.player, this.tileGroup, (player, tile) => {
-            const tileData = tile.getData();
-            if (tileData.solid) {
-                this.handleTileCollision(player, tileData);
-            }
-        });
-        
-        // Player vs coins
-        this.physics.add.overlap(this.player, this.objectGroup, (player, obj) => {
-            const objData = obj.getData();
-            if (objData.type === 'coin' && !objData.collected) {
-                this.collectCoin(obj);
-            } else if (objData.type === 'portal') {
-                this.reachPortal(obj);
-            }
-        });
-        
-        // Player vs enemies
-        this.physics.add.collider(this.player, this.enemyGroup, (player, enemy) => {
-            this.handleEnemyCollision(player, enemy);
+    stomp(e) {
+        e.alive = false;
+        this.player.vz = CONFIG.jumpVelocity * 0.7;
+        this.addScore(CONFIG.scores.stomp);
+        Sfx.play('stomp');
+        this.tweens.add({
+            targets: e.sprite,
+            scaleY: 0.1,
+            alpha: 0,
+            duration: 250,
+            onComplete: () => e.sprite.destroy()
         });
     }
 
-    handleTileCollision(player, tileData) {
-        const playerData = player.getData();
-        
-        // Check if player is on top of tile
-        if (player.body.velocity.y > 0 && player.body.bottom <= tileData.isoY + 32) {
-            playerData.canJump = true;
-            playerData.jumping = false;
-            
-            // Snap player to tile top in cartesian space
-            playerData.cartX = tileData.x;
-            playerData.cartY = tileData.y;
-            playerData.x = tileData.x;
-            playerData.y = tileData.y;
-            
-            // Update position
-            const isoPos = IsoUtils.cartToIso(tileData.x, tileData.y, 0);
-            player.setPosition(isoPos.x, isoPos.y);
-            this.playerShadow.setPosition(isoPos.x + 8, isoPos.y + 16);
-            player.setDepth(IsoUtils.getDepth(tileData.x, tileData.y) + 1);
-        }
-    }
+    // ---------- Pickups & portal ----------
 
-    collectCoin(coin) {
-        if (coin.getData('collected')) return;
-        
-        coin.setData('collected', true);
-        coin.play('collect'); // Will use coin animation
-        this.score += 100;
-        this.coinsCollected++;
-        this.scoreText.setText(`Score: ${this.score}`);
-        this.coinText.setText(`Cores: ${this.coinsCollected}/${this.totalCoins}`);
-        
-        if (window.PIPE_RUNNER this.sound.play('collect');this.sound.play('collect'); window.PIPE_RUNNER.collectSound) window.PIPE_RUNNER.collectSound();
-        
-        // Remove coin after animation
-        this.time.delayedCall(300, () => {
-            coin.destroy();
-        });
-    }
-
-    reachPortal(portal) {
-        if (this.victory || this.gameOver) return;
-        
-        this.victory = true;
-        this.gameOver = true;
-        
-        if (window.PIPE_RUNNER this.sound.play('complete');this.sound.play('complete'); window.PIPE_RUNNER.completeSound) window.PIPE_RUNNER.completeSound();
-        
-        // Stop timer
-        if (this.timer) this.timer.destroy();
-        
-        // Calculate bonus
-        const timeBonus = Math.floor(this.timeLeft * 10);
-        const coinBonus = this.coinsCollected * 50;
-        const totalBonus = timeBonus + coinBonus;
-        
-        this.score += totalBonus;
-        this.scoreText.setText(`Score: ${this.score} + ${totalBonus} BONUS`);
-        
-        // Fade out and go to level complete
-        this.cameras.main.fadeOut(1000, 0, 0, 0, (camera, progress) => {
-            if (progress === 1) {
-                this.scene.start('SceneLevelComplete', {
-                    level: this.currentLevel,
-                    score: this.score,
-                    timeLeft: this.timeLeft,
-                    coins: this.coinsCollected,
-                    totalCoins: this.totalCoins
-                });
-            }
-        });
-    }
-
-    handleEnemyCollision(player, enemy) {
-        if (this.gameOver) return;
-        
-        const playerData = player.getData();
-        const enemyData = enemy.getData();
-        
-        // Check if player is falling on enemy (jump attack)
-        if (player.body.velocity.y > 0 && 
-            player.body.bottom <= enemy.body.top + 10 &&
-            Math.abs(player.x - enemy.x) < 20) {
-            
-            // Player jumps on enemy
-            enemyData.health--;
-            playerData.canJump = true;
-            playerData.jumping = false;
-            
-            // Bounce player
-            player.setVelocityY(-200);
-            
-            // Hurt enemy
-            if (window.PIPE_RUNNER this.sound.play('hurt');this.sound.play('hurt'); window.PIPE_RUNNER.hurtSound) window.PIPE_RUNNER.hurtSound();
-            enemy.play('player_hurt'); // Reuse animation
-            
-            if (enemyData.health <= 0) {
-                // Kill enemy
-                enemy.destroy();
-                this.score += 200;
-                this.scoreText.setText(`Score: ${this.score}`);
-            }
-        } else if (!playerData.invulnerable) {
-            // Player gets hurt
-            playerData.health--;
-            playerData.invulnerable = true;
-            playerData.invulnerableTimer = 0;
-            
-            if (window.PIPE_RUNNER this.sound.play('hurt');this.sound.play('hurt'); window.PIPE_RUNNER.hurtSound) window.PIPE_RUNNER.hurtSound();
-            player.play('player_hurt');
-            
-            // Blink effect
+    checkPickups() {
+        const P = this.player;
+        this.coins.forEach(c => {
+            if (c.collected || P.z > 1 || Math.hypot(P.x - c.x, P.y - c.y) > 0.5) return;
+            c.collected = true;
+            this.coinsCollected++;
+            this.addScore(CONFIG.scores.coin);
+            Sfx.play('collect');
+            this.tweens.killTweensOf(c.sprite);
             this.tweens.add({
-                targets: player,
-                alpha: 0.5,
-                duration: 100,
-                yoyo: true,
-                repeat: 3
+                targets: c.sprite,
+                y: c.sprite.y - 30,
+                scale: 1,
+                alpha: 0,
+                duration: 300,
+                onComplete: () => c.sprite.destroy()
             });
-            
-            if (playerData.health <= 0) {
-                this.gameOver = true;
-                if (window.PIPE_RUNNER this.sound.play('hurt');this.sound.play('hurt'); window.PIPE_RUNNER.hurtSound) window.PIPE_RUNNER.hurtSound();
-                
-                this.cameras.main.shake(500, 0.05);
-                this.time.delayedCall(1000, () => {
-                    this.scene.start('SceneGameOver', {
-                        level: this.currentLevel,
-                        score: this.score
-                    });
-                });
+            if (this.coinsCollected === this.coins.length) {
+                this.portalActive = true;
+                this.portal.sprite.setAlpha(1);
+                Sfx.play('unlock');
+                this.flash('Portal open!');
             }
+        });
+    }
+
+    checkPortal() {
+        const P = this.player;
+        const touching = P.z < 0.5 && Math.hypot(P.x - this.portal.x, P.y - this.portal.y) < 0.5;
+        if (!touching) {
+            this.portalWarned = false;
+            return;
+        }
+        if (this.portalActive) {
+            this.completeLevel();
+        } else if (!this.portalWarned) {
+            this.portalWarned = true;
+            this.flash('Collect all Power Cores first!');
         }
     }
 
-    startTimer() {
-        this.timeLeft = 120;
-        this.timeText.setText(`Time: ${this.timeLeft}s`);
-        
-        if (this.timer) this.timer.destroy();
-        
-        this.timer = this.time.addEvent({
-            delay: 1000,
-            callback: () => {
-                this.timeLeft--;
-                this.timeText.setText(`Time: ${this.timeLeft}s`);
-                
-                if (this.timeLeft <= 0) {
-                    this.gameOver = true;
-                    if (window.PIPE_RUNNER this.sound.play('hurt');this.sound.play('hurt'); window.PIPE_RUNNER.hurtSound) window.PIPE_RUNNER.hurtSound();
-                    this.cameras.main.shake(500, 0.05);
-                    this.time.delayedCall(1000, () => {
-                        this.scene.start('SceneGameOver', {
-                            level: this.currentLevel,
-                            score: this.score
-                        });
-                    });
-                }
-            },
-            loop: true
+    completeLevel() {
+        this.state = 'done';
+        Sfx.stopMusic();
+        Sfx.play('complete');
+
+        const timeBonus = Math.ceil(this.timeLeft) * CONFIG.scores.timeBonusPerSecond;
+        const coinBonus = this.coinsCollected * CONFIG.scores.coinBonus;
+        this.addScore(timeBonus + coinBonus);
+
+        this.tweens.add({
+            targets: this.player.sprite,
+            x: this.portal.sprite.x,
+            y: this.portal.sprite.y,
+            scale: 0,
+            angle: 360,
+            duration: 600
+        });
+        this.player.shadow.setVisible(false);
+
+        this.time.delayedCall(700, () => {
+            this.cameras.main.fadeOut(500);
+            this.cameras.main.once('camerafadeoutcomplete', () => {
+                this.scene.start('SceneLevelComplete', {
+                    level: this.levelNumber,
+                    score: this.score,
+                    timeLeft: Math.ceil(this.timeLeft),
+                    coins: this.coinsCollected,
+                    totalCoins: this.coins.length,
+                    timeBonus,
+                    coinBonus
+                });
+            });
         });
     }
+
+    endRun(reason) {
+        this.state = 'over';
+        Sfx.stopMusic();
+        Sfx.play('gameover');
+        this.cameras.main.shake(400, 0.02);
+        this.time.delayedCall(1200, () => {
+            this.scene.start('SceneGameOver', {
+                level: this.levelNumber,
+                score: this.score,
+                retryScore: this.levelStartScore,
+                reason
+            });
+        });
+    }
+
+    // ---------- HUD ----------
+
+    createHUD() {
+        const style = (color) => ({ font: '20px monospace', fill: color, stroke: '#000000', strokeThickness: 3 });
+        const fixed = (obj) => obj.setScrollFactor(0).setDepth(10000);
+
+        this.scoreText = fixed(this.add.text(16, 12, '', style('#00ff00')));
+        this.timeText = fixed(this.add.text(16, 40, '', style('#00ffff')));
+        this.healthText = fixed(this.add.text(16, 68, '', style('#ff4444')));
+        this.levelText = fixed(this.add.text(CONFIG.width - 16, 12, `Level ${this.levelNumber}: ${this.level.name}`, style('#ff00ff')).setOrigin(1, 0));
+        this.coinText = fixed(this.add.text(CONFIG.width - 16, 40, '', style('#ffff00')).setOrigin(1, 0));
+        this.messageText = fixed(this.add.text(CONFIG.width / 2, 120, '', {
+            font: '24px monospace', fill: '#ffffff', stroke: '#000000', strokeThickness: 4
+        }).setOrigin(0.5).setAlpha(0));
+
+        this.updateHUD();
+        this.flash(this.level.name);
+    }
+
+    updateHUD() {
+        this.scoreText.setText(`Score: ${this.score}`);
+        this.timeText.setText(`Time: ${Math.max(0, Math.ceil(this.timeLeft))}s`);
+        this.healthText.setText('Health: ' + '♥'.repeat(Math.max(0, this.health)) + '♡'.repeat(CONFIG.maxHealth - Math.max(0, this.health)));
+        this.coinText.setText(`Cores: ${this.coinsCollected}/${this.coins.length}`);
+    }
+
+    addScore(points) {
+        this.score += points;
+        this.updateHUD();
+    }
+
+    flash(message) {
+        this.tweens.killTweensOf(this.messageText);
+        this.messageText.setText(message).setAlpha(1);
+        this.tweens.add({ targets: this.messageText, alpha: 0, delay: 1200, duration: 400 });
+    }
+
+    // ---------- Input ----------
+
+    createInput() {
+        this.keys = this.input.keyboard.addKeys({
+            up: 'UP', down: 'DOWN', left: 'LEFT', right: 'RIGHT',
+            w: 'W', a: 'A', s: 'S', d: 'D', jump: 'SPACE'
+        });
+        this.input.keyboard.on('keydown-M', () => this.flash(Sfx.toggleMute() ? 'Sound off' : 'Sound on'));
+        this.input.keyboard.on('keydown-ESC', () => this.scene.start('SceneTitle'));
+
+        if (this.sys.game.device.input.touch) this.createTouchControls();
+    }
+
+    // Left half: floating joystick. Right half: jump.
+    // Native touch listeners on window (not Phaser pointers) so touches that start in the
+    // letterbox bars around the canvas still steer; coordinates are mapped into game space.
+    createTouchControls() {
+        const fixed = (obj) => obj.setScrollFactor(0).setDepth(10000);
+        const stickBase = fixed(this.add.circle(0, 0, 50, 0xffffff, 0.12).setVisible(false));
+        const stickKnob = fixed(this.add.circle(0, 0, 22, 0xffffff, 0.35).setVisible(false));
+        fixed(this.add.circle(CONFIG.width - 90, CONFIG.height - 90, 50, 0xffffff, 0.15));
+        fixed(this.add.text(CONFIG.width - 90, CONFIG.height - 90, 'JUMP', { font: '18px monospace', fill: '#ffffff' }).setOrigin(0.5));
+        fixed(this.add.text(20, CONFIG.height - 30, 'drag to move', { font: '14px monospace', fill: '#888888' }));
+
+        const toGame = (t) => ({ x: this.scale.transformX(t.pageX), y: this.scale.transformY(t.pageY) });
+        const release = () => {
+            this.stickId = null;
+            this.touchVec = { x: 0, y: 0 };
+            stickBase.setVisible(false);
+            stickKnob.setVisible(false);
+        };
+
+        const onStart = (ev) => {
+            Sfx.unlock();
+            for (const t of ev.changedTouches) {
+                const p = toGame(t);
+                if (p.x >= CONFIG.width / 2) {
+                    this.jumpQueued = true;
+                } else if (this.stickId === null) {
+                    this.stickId = t.identifier;
+                    this.stickOrigin = p;
+                    stickBase.setPosition(p.x, p.y).setVisible(true);
+                    stickKnob.setPosition(p.x, p.y).setVisible(true);
+                }
+            }
+        };
+        const onMove = (ev) => {
+            for (const t of ev.changedTouches) {
+                if (t.identifier !== this.stickId) continue;
+                const p = toGame(t);
+                const vx = p.x - this.stickOrigin.x;
+                const vy = p.y - this.stickOrigin.y;
+                const len = Math.min(50, Math.hypot(vx, vy));
+                const angle = Math.atan2(vy, vx);
+                stickKnob.setPosition(this.stickOrigin.x + Math.cos(angle) * len, this.stickOrigin.y + Math.sin(angle) * len);
+                this.touchVec = { x: Math.cos(angle) * len / 50, y: Math.sin(angle) * len / 50 };
+            }
+        };
+        const onEnd = (ev) => {
+            for (const t of ev.changedTouches) {
+                if (t.identifier === this.stickId) release();
+            }
+        };
+
+        const listeners = { touchstart: onStart, touchmove: onMove, touchend: onEnd, touchcancel: onEnd };
+        Object.entries(listeners).forEach(([type, fn]) => window.addEventListener(type, fn));
+        this.events.once('shutdown', () => {
+            Object.entries(listeners).forEach(([type, fn]) => window.removeEventListener(type, fn));
+        });
+    }
+
+    // ---------- Loop ----------
 
     update(time, delta) {
-        if (this.gameOver) return;
-        
-        const playerData = this.player.getData();
-        
-        // Handle invulnerability timer
-        if (playerData.invulnerable) {
-            playerData.invulnerableTimer += delta;
-            if (playerData.invulnerableTimer >= 2000) {
-                playerData.invulnerable = false;
-                playerData.invulnerableTimer = 0;
-                this.player.clearAlpha();
-            }
-        }
-        
-        // Movement
-        let moveX = 0;
-        let moveY = 0;
-        
-        // Keyboard input
-        if (this.cursors.left.isDown) moveX = -1;
-        if (this.cursors.right.isDown) moveX = 1;
-        if (this.cursors.up.isDown) moveY = -1;
-        if (this.cursors.down.isDown) moveY = 1;
-        
-        // Touch input
-        if (this.touchMove) {
-            if (this.touchMove.x < -10) moveX = -1;
-            if (this.touchMove.x > 10) moveX = 1;
-            if (this.touchMove.y < -10) moveY = -1;
-            if (this.touchMove.y > 10) moveY = 1;
-        }
-        
-        // Normalize diagonal movement
-        if (moveX !== 0 && moveY !== 0) {
-            moveX *= 0.7071;
-            moveY *= 0.7071;
-        }
-        
-        // Calculate target cartesian position
-        const targetCartX = playerData.cartX + moveX * (delta / 1000) * 5;
-        const targetCartY = playerData.cartY + moveY * (delta / 1000) * 5;
-        
-        // Check if target position is valid (on a solid tile)
-        const targetTile = this.findTileAt(targetCartX, targetCartY);
-        
-        if (targetTile && targetTile.solid) {
-            playerData.cartX = targetCartX;
-            playerData.cartY = targetCartY;
-            playerData.x = Math.round(targetCartX);
-            playerData.y = Math.round(targetCartY);
-            
-            // Update player position in isometric space
-            const isoPos = IsoUtils.cartToIso(playerData.x, playerData.y, 0);
-            this.player.setPosition(isoPos.x, isoPos.y);
-            this.playerShadow.setPosition(isoPos.x + 8, isoPos.y + 16);
-            this.player.setDepth(IsoUtils.getDepth(playerData.x, playerData.y) + 1);
-            this.playerShadow.setDepth(IsoUtils.getDepth(playerData.x, playerData.y));
-            
-            // Update animation
-            if (moveX !== 0 || moveY !== 0) {
-                this.player.play('player_run');
-                // Flip based on direction
-                if (moveX < 0) {
-                    this.player.setFlipX(true);
-                } else if (moveX > 0) {
-                    this.player.setFlipX(false);
-                }
-            } else {
-                this.player.play('player_idle');
-            }
-        }
-        
-        // Jumping
-        if ((this.cursors.space.isDown || this.touchJump) && playerData.canJump && !playerData.jumping) {
-            playerData.jumping = true;
-            playerData.canJump = false;
-            
-            if (window.PIPE_RUNNER this.sound.play('jump');this.sound.play('jump'); window.PIPE_RUNNER.jumpSound) window.PIPE_RUNNER.jumpSound();
-            this.player.play('player_jump');
-            
-            // Calculate jump direction based on current movement
-            const jumpIsoPos = IsoUtils.cartToIso(playerData.x + moveX, playerData.y + moveY, -1);
-            
-            this.tweens.add({
-                targets: this.player,
-                x: jumpIsoPos.x,
-                y: jumpIsoPos.y,
-                duration: 300,
-                ease: 'Sine.easeOut',
-                onComplete: () => {
-                    playerData.jumping = false;
-                    // Check if landed on tile
-                    const newTile = this.findTileAt(Math.round(playerData.x + moveX), Math.round(playerData.y + moveY));
-                    if (newTile && newTile.solid) {
-                        playerData.cartX = Math.round(playerData.x + moveX);
-                        playerData.cartY = Math.round(playerData.y + moveY);
-                        playerData.x = playerData.cartX;
-                        playerData.y = playerData.cartY;
-                        playerData.canJump = true;
-                    }
-                }
-            });
-            
-            this.tweens.add({
-                targets: this.playerShadow,
-                x: jumpIsoPos.x + 8,
-                y: jumpIsoPos.y + 16,
-                duration: 300,
-                ease: 'Sine.easeOut'
-            });
-        }
-        
-        // Reset jump input
-        this.touchJump = false;
-        
-        // Update enemies
-        this.enemyGroup.getChildren().forEach(enemy => {
-            this.updateEnemy(enemy, delta);
-        });
-    }
+        if (this.state !== 'playing') return;
+        const dt = Math.min(delta, 50) / 1000;
 
-    findTileAt(cartX, cartY) {
-        const x = Math.floor(cartX);
-        const y = Math.floor(cartY);
-        
-        for (let i = 0; i < this.tileGroup.getChildren().length; i++) {
-            const tile = this.tileGroup.getChildren()[i];
-            const tileData = tile.getData();
-            if (tileData.x === x && tileData.y === y) {
-                return tileData;
-            }
+        this.timeLeft -= dt;
+        if (this.timeLeft <= 0) {
+            this.timeLeft = 0;
+            this.updateHUD();
+            this.endRun('Out of time');
+            return;
         }
-        return null;
-    }
+        this.timeText.setText(`Time: ${Math.ceil(this.timeLeft)}s`);
 
-    updateEnemy(enemy, delta) {
-        const enemyData = enemy.getData();
-        const patrol = enemyData.patrol;
-        const currentIndex = enemyData.currentPatrolIndex;
-        const nextIndex = (currentIndex + 1) % patrol.length;
-        const currentPos = patrol[currentIndex];
-        const nextPos = patrol[nextIndex];
-        
-        // Move towards next patrol point
-        enemyData.patrolTimer += delta;
-        const moveSpeed = enemyData.patrolSpeed * (delta / 1000);
-        
-        const dx = nextPos.x - currentPos.x;
-        const dy = nextPos.y - currentPos.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        
-        if (distance > 0) {
-            const progress = enemyData.patrolTimer * moveSpeed / distance;
-            
-            if (progress >= 1) {
-                // Reached next point
-                enemyData.currentPatrolIndex = nextIndex;
-                enemyData.patrolTimer = 0;
-                enemyData.cartX = nextPos.x;
-                enemyData.cartY = nextPos.y;
-            } else {
-                // Moving towards next point
-                enemyData.cartX = currentPos.x + dx * progress;
-                enemyData.cartY = currentPos.y + dy * progress;
-            }
-            
-            // Update position
-            const isoPos = IsoUtils.cartToIso(enemyData.cartX, enemyData.cartY, 0);
-            enemy.setPosition(isoPos.x, isoPos.y);
-            enemy.setDepth(IsoUtils.getDepth(enemyData.cartX, enemyData.cartY) + 1);
-            
-            // Flip based on direction
-            if (dx < 0) {
-                enemy.setFlipX(true);
-            } else if (dx > 0) {
-                enemy.setFlipX(false);
-            }
-        }
+        this.updatePlayer(dt);
+        if (this.state !== 'playing') return;
+        this.updateEnemies(dt);
+        this.checkEnemies();
+        if (this.state !== 'playing') return;
+        this.checkPickups();
+        this.checkPortal();
+        this.updateInvulnerability(delta);
     }
 }

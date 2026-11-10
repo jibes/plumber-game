@@ -38,6 +38,11 @@ jobs:
           cd game
           npm ci
       
+      - name: Check
+        run: |
+          cd game
+          npm test
+
       - name: Build web version
         run: |
           cd game

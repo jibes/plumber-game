@@ -1,32 +1,25 @@
-// Game configuration
+// Pipe Runner - global configuration (single source of truth)
 const CONFIG = {
     width: 800,
     height: 600,
-    tileSize: 64,
-    isoTileWidth: 128,
-    isoTileHeight: 64,
-    gravity: 800,
-    jumpForce: 350,
-    playerSpeed: 200,
-    maxLevels: 3,
-    
-    // Colors
-    colors: {
-        background: '#000000',
-        floor1: '#333333',
-        floor2: '#444444',
-        wall: '#555555',
-        player: '#ff6600',
-        playerLight: '#ffaa00',
-        playerDark: '#cc3300',
-        coin: '#00ffff',
-        portal: '#ff00ff',
-        drone: '#ffff00',
-        blob: '#00ff00',
-        text: '#ffffff',
-        textHighlight: '#00ff00'
+
+    // Isometric projection: half-size of a tile diamond in pixels, and pixels per unit of height
+    tileHalfW: 32,
+    tileHalfH: 16,
+    zScale: 32,
+
+    // Player physics, in tiles and seconds
+    playerSpeed: 4.5,
+    playerRadius: 0.25,
+    jumpVelocity: 6.5,
+    gravity: 20,
+    maxHealth: 3,
+    invulnerableMs: 1500,
+
+    scores: {
+        coin: 100,
+        stomp: 200,
+        timeBonusPerSecond: 10,
+        coinBonus: 50
     }
 };
-
-// Make available globally
-window.PIPE_RUNNER_CONFIG = CONFIG;

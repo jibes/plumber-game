@@ -1,18 +1,17 @@
 {
   "name": "pipe-runner",
   "version": "1.0.0",
-  "description": "Isometric platformer game - Pipe Runner. A free, open-source game inspired by classic Game Boy platformers.",
+  "description": "Isometric platformer game - Pipe Runner. A free, open-source game built with Phaser 3.",
   "main": "index.html",
   "scripts": {
-    "start": "npx serve . -p 3000",
-    "dev": "npx serve . -p 3000",
+    "postinstall": "mkdir -p vendor && cp node_modules/phaser/dist/phaser.min.js vendor/",
+    "start": "serve . -p 3000",
+    "dev": "serve . -p 3000",
+    "test": "node scripts/check.js",
     "build": "npm run build:web",
-    "build:web": "mkdir -p build/web && cp -r index.html src build/web/ && echo 'Web build ready in build/web/'",
-    "build:android": "cd cordova && cordova build android --release",
-    "build:all": "npm run build:web && npm run build:android",
-    "serve": "npm run start",
-    "deploy:gh": "npm run build:web && echo 'Deploy build/web/ to gh-pages branch'",
-    "clean": "rm -rf build/ node_modules/ cordova/node_modules/ cordova/platforms/"
+    "build:web": "rm -rf build/web && mkdir -p build/web && cp -r index.html src vendor build/web/ && echo 'Web build ready in build/web/'",
+    "build:android": "npm run build:web && rm -rf cordova/www && cp -r build/web cordova/www && cd cordova && npm install && npx cordova prepare android && npx cordova build android",
+    "clean": "rm -rf build/ vendor/ node_modules/ cordova/node_modules/ cordova/platforms/ cordova/plugins/ cordova/www/"
   },
   "keywords": [
     "game",
@@ -35,5 +34,8 @@
   "bugs": {
     "url": "https://github.com/jibes/plumber-game/issues"
   },
-  "homepage": "https://jibes.github.io/plumber-game/"
+  "homepage": "https://jibes.github.io/plumber-game/",
+  "dependencies": {
+    "phaser": "3.80.1"
+  }
 }

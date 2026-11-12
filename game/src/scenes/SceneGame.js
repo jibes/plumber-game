@@ -10,8 +10,9 @@ class SceneGame extends Phaser.Scene {
     init(data) {
         this.levelNumber = data.level || 1;
         this.score = data.score || 0;
+        this.seed = data.seed !== undefined ? data.seed : Math.floor(Math.random() * 1e9);
         this.levelStartScore = this.score;
-        this.level = parseLevel(LEVELS[this.levelNumber - 1]);
+        this.level = LevelGen.generate(this.levelNumber, this.seed);
         this.state = 'playing'; // playing | falling | over | done
         this.health = CONFIG.maxHealth;
         this.timeLeft = this.level.time;
@@ -25,60 +26,169 @@ class SceneGame extends Phaser.Scene {
     }
 
     create() {
+        // World and HUD live in separate layers seen by separate cameras, so zooming the world leaves the HUD alone.
+        this.world = this.add.layer();
+        this.hud = this.add.layer();
         this.buildWorld();
         this.createPlayer();
         this.createEnemies();
         this.createHUD();
         this.createInput();
-
-        this.cameras.main.setRoundPixels(true);
-        this.cameras.main.startFollow(this.player.shadow, true, 0.12, 0.12);
-        this.cameras.main.fadeIn(400);
+        this.createCameras();
 
         Sfx.startMusic();
         this.events.once('shutdown', () => Sfx.stopMusic());
     }
 
+    inWorld(obj) {
+        this.world.add(obj);
+        return obj;
+    }
+
+    inHud(obj) {
+        this.hud.add(obj);
+        return obj;
+    }
+
     // ---------- World ----------
 
-    tileAt(x, y) {
+    cell(x, y) {
         const row = this.level.grid[Math.floor(y)];
-        const tile = row && row[Math.floor(x)];
-        return tile === undefined ? '#' : tile;
+        const v = row && row[Math.floor(x)];
+        return v === undefined ? LevelGen.WALL : v;
+    }
+
+    // Height of the surface of a cell in z: -Infinity for pits, Infinity for walls.
+    top(x, y) {
+        const v = this.cell(x, y);
+        if (v === LevelGen.PIT) return -Infinity;
+        if (v === LevelGen.WALL) return Infinity;
+        return v * CONFIG.levelZ;
+    }
+
+    corners(x, y, r) {
+        return [[x - r, y - r], [x + r, y - r], [x - r, y + r], [x + r, y + r]];
+    }
+
+    // Highest surface under a footprint, so an actor stands on a ledge as long as any part of it is over it.
+    groundAt(x, y, r = CONFIG.playerRadius) {
+        return Math.max(...this.corners(x, y, r).map(([cx, cy]) => this.top(cx, cy)));
+    }
+
+    blocked(x, y, z, r = CONFIG.playerRadius) {
+        return this.corners(x, y, r).some(([cx, cy]) => this.top(cx, cy) > z + CONFIG.stepTolerance);
+    }
+
+    // Draw after every cell the footprint is standing on or above; cells that rise above it still cover it.
+    depthAt(x, y, z, r) {
+        let diagonal = Math.floor(x) + Math.floor(y);
+        for (const [cx, cy] of this.corners(x, y, r)) {
+            const t = this.top(cx, cy);
+            if (t > -Infinity && t <= z + 0.05) diagonal = Math.max(diagonal, Math.floor(cx) + Math.floor(cy));
+        }
+        return IsoUtils.cellDepth(diagonal, 6);
+    }
+
+    // Walls rise above the floor around them; border walls along the front edges stay low so they hide less.
+    wallLevels(x, y) {
+        const { grid, width, height } = this.level;
+        let max = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            const v = grid[y + dy] && grid[y + dy][x + dx];
+            if (v !== undefined && v !== LevelGen.WALL && v > max) max = v;
+        }
+        return max + (x === width - 1 || y === height - 1 ? 1 : 2);
     }
 
     buildWorld() {
-        const { grid, coins, exit } = this.level;
+        const { grid, coins, exit, width: W, height: H } = this.level;
+        let tallest = 0;
 
-        grid.forEach((row, y) => row.forEach((tile, x) => {
-            if (tile === ' ') return;
-            const p = IsoUtils.cartToIso(x + 0.5, y + 0.5);
-            if (tile === '#') {
-                this.add.image(p.x, p.y, 'tiles', 2).setOrigin(0.5, 0.75)
-                    .setDepth(IsoUtils.actorDepth(x + 0.5, y + 0.5));
-            } else {
-                this.add.image(p.x, p.y, 'tiles', (x + y) % 2).setOrigin(0.5, 0.625)
-                    .setDepth(IsoUtils.floorDepth(x, y));
+        grid.forEach((row, y) => row.forEach((v, x) => {
+            if (v === LevelGen.PIT) return;
+            if (v === 0) {
+                const p = IsoUtils.cartToIso(x + 0.5, y + 0.5);
+                this.inWorld(this.add.image(p.x, p.y, 'tiles', (x + y) % 2).setOrigin(0.5, 0.625)
+                    .setDepth(IsoUtils.floorDepth(x, y)));
+                return;
             }
+            const levels = v === LevelGen.WALL ? this.wallLevels(x, y) : v;
+            const key = v === LevelGen.WALL ? Blocks.wall(this, levels) : Blocks.floor(this, levels, (x + y) % 2);
+            const p = IsoUtils.cartToIso(x + 0.5, y + 0.5, levels * CONFIG.levelZ);
+            this.inWorld(this.add.image(p.x, p.y, key).setOrigin(0.5, Blocks.originY(levels))
+                .setDepth(IsoUtils.cellDepth(x + y, 2)));
+            tallest = Math.max(tallest, levels);
         }));
+
+        // Projected extent of the whole level, used to fit the camera.
+        const left = IsoUtils.cartToIso(0, H).x, right = IsoUtils.cartToIso(W, 0).x;
+        const topY = IsoUtils.cartToIso(0, 0, tallest * CONFIG.levelZ).y, bottomY = IsoUtils.cartToIso(W, H).y + 8;
+        this.bounds = new Phaser.Geom.Rectangle(left, topY, right - left, bottomY - topY);
 
         this.coins = coins.map(c => {
             const x = c.x + 0.5, y = c.y + 0.5;
-            const p = IsoUtils.cartToIso(x, y, 0.6);
-            const sprite = this.add.sprite(p.x, p.y, 'objects', 0).setScale(0.6)
-                .setDepth(IsoUtils.actorDepth(x, y)).play('core_spin');
+            const p = IsoUtils.cartToIso(x, y, this.top(x, y) + 0.6);
+            const sprite = this.inWorld(this.add.sprite(p.x, p.y, 'objects', 0).setScale(0.6)
+                .setDepth(IsoUtils.cellDepth(c.x + c.y, 6)).play('core_spin'));
             this.tweens.add({ targets: sprite, y: p.y - 6, duration: 600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
-            return { x, y, sprite, collected: false };
+            return { x, y, z: this.top(x, y), sprite, collected: false };
         });
 
         const ex = exit.x + 0.5, ey = exit.y + 0.5;
-        const p = IsoUtils.cartToIso(ex, ey, 0.75);
+        const p = IsoUtils.cartToIso(ex, ey, this.top(ex, ey) + 0.75);
         this.portal = {
             x: ex,
             y: ey,
-            sprite: this.add.sprite(p.x, p.y, 'objects', 4).setScale(0.9).setAlpha(0.3)
-                .setDepth(IsoUtils.actorDepth(ex, ey)).play('portal_spin')
+            z: this.top(ex, ey),
+            sprite: this.inWorld(this.add.sprite(p.x, p.y, 'objects', 4).setScale(0.9).setAlpha(0.3)
+                .setDepth(IsoUtils.cellDepth(exit.x + exit.y, 6)).play('portal_spin'))
         };
+    }
+
+    // ---------- Camera ----------
+
+    createCameras() {
+        const cam = this.cameras.main;
+        this.uiCam = this.cameras.add(0, 0, this.scale.width, this.scale.height);
+        cam.ignore(this.hud);
+        this.uiCam.ignore(this.world);
+        cam.setRoundPixels(true);
+        this.fitCamera();
+        cam.fadeIn(400);
+        this.uiCam.fadeIn(400);
+
+        this.scale.on('resize', this.onResize, this);
+        this.events.once('shutdown', () => this.scale.off('resize', this.onResize, this));
+    }
+
+    onResize(gameSize) {
+        this.uiCam.setSize(gameSize.width, gameSize.height);
+        this.layoutHUD();
+        this.fitCamera();
+    }
+
+    // Show the whole level when it fits at a readable zoom; otherwise zoom to the readable minimum and follow.
+    fitCamera() {
+        const cam = this.cameras.main;
+        const { width: w, height: h } = this.scale;
+        const b = this.bounds;
+        const hudPad = 96 * UI.scaleFor(w, h);
+        const fit = Math.min(w / b.width, (h - hudPad) / b.height) * 0.96;
+        const readable = Phaser.Math.Clamp(Math.min(w, h) / CONFIG.zoom.refSize, CONFIG.zoom.min, 1.6);
+        const zoom = Phaser.Math.Clamp(fit, readable, CONFIG.zoom.max);
+        cam.setZoom(zoom);
+        if (fit >= readable) {
+            cam.stopFollow();
+            cam.removeBounds();
+            cam.centerOn(b.centerX, b.centerY - hudPad / 2 / zoom);
+        } else {
+            // Bounds at least as large as the view, centred on the level, so a level that fits along one
+            // axis stays centred on that axis instead of sticking to the top or left edge.
+            const vw = w / zoom, vh = h / zoom, top = hudPad / zoom;
+            const bw = Math.max(b.width + 96, vw), bh = Math.max(b.height + 96 + top, vh);
+            cam.setBounds(b.centerX - bw / 2, b.centerY - top / 2 - bh / 2, bw, bh);
+            cam.startFollow(this.player.shadow, true, 0.12, 0.12);
+        }
     }
 
     // ---------- Player ----------
@@ -86,29 +196,27 @@ class SceneGame extends Phaser.Scene {
     createPlayer() {
         const { start } = this.level;
         const x = start.x + 0.5, y = start.y + 0.5;
+        const z = this.top(x, y);
         this.player = {
-            x, y, z: 0, vz: 0,
-            lastSafe: { x, y },
-            shadow: this.add.image(0, 0, 'shadow'),
-            sprite: this.add.sprite(0, 0, 'player', 0).setOrigin(0.5, 0.875).setScale(0.8).play('player_idle')
+            x, y, z, vz: 0,
+            lastSafe: { x, y, z },
+            shadow: this.inWorld(this.add.image(0, 0, 'shadow')),
+            sprite: this.inWorld(this.add.sprite(0, 0, 'player', 0).setOrigin(0.5, 0.875).setScale(0.8).play('player_idle'))
         };
         this.syncPlayer();
     }
 
     syncPlayer() {
         const P = this.player;
-        const ground = IsoUtils.cartToIso(P.x, P.y);
-        const depth = IsoUtils.actorDepth(P.x, P.y);
-        P.shadow.setPosition(ground.x, ground.y).setDepth(depth - 1)
-            .setVisible(this.tileAt(P.x, P.y) === '.')
-            .setScale(1 - Math.min(P.z, 1) * 0.4);
-        P.sprite.setPosition(ground.x, ground.y - P.z * CONFIG.zScale).setDepth(depth);
-    }
-
-    hitsWall(x, y) {
-        const r = CONFIG.playerRadius;
-        return this.tileAt(x - r, y - r) === '#' || this.tileAt(x + r, y - r) === '#' ||
-               this.tileAt(x - r, y + r) === '#' || this.tileAt(x + r, y + r) === '#';
+        const ground = this.groundAt(P.x, P.y);
+        const depth = this.depthAt(P.x, P.y, P.z, CONFIG.playerRadius);
+        if (ground > -Infinity) {
+            const g = IsoUtils.cartToIso(P.x, P.y, ground);
+            P.shadow.setPosition(g.x, g.y).setScale(1 - Math.min(P.z - ground, 1) * 0.4);
+        }
+        P.shadow.setVisible(ground > -Infinity).setDepth(depth - 1);
+        const s = IsoUtils.cartToIso(P.x, P.y, P.z);
+        P.sprite.setPosition(s.x, s.y).setDepth(depth);
     }
 
     readInput() {
@@ -134,29 +242,41 @@ class SceneGame extends Phaser.Scene {
         const len = Math.hypot(dx, dy);
         if (len > 0) { dx /= len; dy /= len; }
 
+        // Anything higher than the player's feet blocks; jumping lifts the feet over ledges.
         const step = CONFIG.playerSpeed * dt;
-        if (!this.hitsWall(P.x + dx * step, P.y)) P.x += dx * step;
-        if (!this.hitsWall(P.x, P.y + dy * step)) P.y += dy * step;
+        if (!this.blocked(P.x + dx * step, P.y, P.z)) P.x += dx * step;
+        if (!this.blocked(P.x, P.y + dy * step, P.z)) P.y += dy * step;
 
-        if (input.jump && P.z === 0) {
+        const ground = this.groundAt(P.x, P.y);
+        const grounded = P.z <= ground + CONFIG.stepTolerance && P.vz <= 0;
+        if (grounded) {
+            P.z = ground;
+            P.vz = 0;
+        }
+        if (input.jump && grounded) {
             P.vz = CONFIG.jumpVelocity;
             Sfx.play('jump');
         }
-        if (P.z > 0 || P.vz > 0) {
+        if (!grounded || P.vz > 0) {
             P.vz -= CONFIG.gravity * dt;
-            P.z = Math.max(0, P.z + P.vz * dt);
-            if (P.z === 0) P.vz = 0;
-        }
-
-        if (P.z === 0) {
-            if (this.tileAt(P.x, P.y) === ' ') {
-                this.fallIntoPit();
-                return;
+            P.z += P.vz * dt;
+            if (P.z <= ground) {
+                P.z = ground;
+                P.vz = 0;
             }
-            P.lastSafe = { x: Math.floor(P.x) + 0.5, y: Math.floor(P.y) + 0.5 };
         }
 
-        const anim = P.z > 0 ? 'player_jump' : (len > 0 ? 'player_run' : 'player_idle');
+        if (ground === -Infinity && P.z < -0.3) {
+            this.fallIntoPit();
+            return;
+        }
+        // Respawn points are only taken from the region that can always get back to the start.
+        const cx = Math.floor(P.x), cy = Math.floor(P.y);
+        if (P.z === ground && this.top(P.x, P.y) === ground && this.level.safe.has(cy * this.level.width + cx)) {
+            P.lastSafe = { x: cx + 0.5, y: cy + 0.5, z: ground };
+        }
+
+        const anim = P.z > ground ? 'player_jump' : (len > 0 ? 'player_run' : 'player_idle');
         if (P.sprite.anims.getName() !== anim) P.sprite.play(anim);
         const screenDx = dx - dy;
         if (screenDx > 0.01) P.sprite.setFlipX(false);
@@ -181,10 +301,7 @@ class SceneGame extends Phaser.Scene {
             ease: 'Quad.easeIn',
             onComplete: () => {
                 if (this.loseHealth('Fell into a pit')) return;
-                P.x = P.lastSafe.x;
-                P.y = P.lastSafe.y;
-                P.z = 0;
-                P.vz = 0;
+                Object.assign(P, P.lastSafe, { vz: 0 });
                 P.sprite.setScale(0.8).setAlpha(1);
                 this.syncPlayer();
                 this.state = 'playing';
@@ -216,18 +333,21 @@ class SceneGame extends Phaser.Scene {
     createEnemies() {
         this.enemies = this.level.enemies.map(e => {
             const drone = e.type === 'drone';
+            const h = this.level.grid[e.y][e.x];
             return {
                 type: e.type,
                 x: e.x + 0.5,
                 y: e.y + 0.5,
+                h, // patrols only across cells of this height
+                baseZ: h * CONFIG.levelZ,
                 axis: drone ? 'x' : 'y',
-                dir: 1,
-                speed: drone ? 1.8 : 1.1,
+                dir: Math.random() < 0.5 ? 1 : -1,
+                speed: (drone ? 1.8 : 1.1) * this.level.enemySpeed,
                 hover: drone ? 0.35 : 0,
                 bob: Math.random() * Math.PI * 2,
                 alive: true,
-                sprite: this.add.sprite(0, 0, 'enemies', drone ? 0 : 4).setOrigin(0.5, 0.875)
-                    .setScale(0.85).play(drone ? 'drone_move' : 'blob_move')
+                sprite: this.inWorld(this.add.sprite(0, 0, 'enemies', drone ? 0 : 4).setOrigin(0.5, 0.875)
+                    .setScale(0.85).play(drone ? 'drone_move' : 'blob_move'))
             };
         });
         this.enemies.forEach(e => this.syncEnemy(e));
@@ -238,8 +358,8 @@ class SceneGame extends Phaser.Scene {
             if (!e.alive) return;
             const next = e[e.axis] + e.dir * e.speed * dt;
             const lead = next + e.dir * 0.5;
-            const tile = e.axis === 'x' ? this.tileAt(lead, e.y) : this.tileAt(e.x, lead);
-            if (tile === '.') e[e.axis] = next;
+            const cell = e.axis === 'x' ? this.cell(lead, e.y) : this.cell(e.x, lead);
+            if (cell === e.h) e[e.axis] = next;
             else e.dir *= -1;
             e.bob += dt * 4;
             e.sprite.setFlipX(e.axis === 'x' ? e.dir < 0 : e.dir > 0);
@@ -248,18 +368,19 @@ class SceneGame extends Phaser.Scene {
     }
 
     syncEnemy(e) {
-        const z = e.hover + (e.type === 'drone' ? Math.sin(e.bob) * 0.08 : 0);
+        const z = e.baseZ + e.hover + (e.type === 'drone' ? Math.sin(e.bob) * 0.08 : 0);
         const p = IsoUtils.cartToIso(e.x, e.y, z);
-        e.sprite.setPosition(p.x, p.y).setDepth(IsoUtils.actorDepth(e.x, e.y));
+        e.sprite.setPosition(p.x, p.y).setDepth(this.depthAt(e.x, e.y, e.baseZ, 0.3));
     }
 
     checkEnemies() {
         const P = this.player;
         for (const e of this.enemies) {
             if (!e.alive) continue;
-            if (Math.hypot(P.x - e.x, P.y - e.y) > 0.6 || Math.abs(P.z - e.hover) > 0.8) continue;
+            const ez = e.baseZ + e.hover;
+            if (Math.hypot(P.x - e.x, P.y - e.y) > 0.6 || Math.abs(P.z - ez) > 0.8) continue;
 
-            if (P.vz < 0 && P.z > e.hover + 0.1) {
+            if (P.vz < 0 && P.z > ez + 0.1) {
                 this.stomp(e);
             } else if (this.invulnerableMs <= 0) {
                 Sfx.play('hurt');
@@ -290,7 +411,8 @@ class SceneGame extends Phaser.Scene {
     checkPickups() {
         const P = this.player;
         this.coins.forEach(c => {
-            if (c.collected || P.z > 1 || Math.hypot(P.x - c.x, P.y - c.y) > 0.5) return;
+            const dz = P.z - c.z;
+            if (c.collected || dz > 1 || dz < -0.3 || Math.hypot(P.x - c.x, P.y - c.y) > 0.5) return;
             c.collected = true;
             this.coinsCollected++;
             this.addScore(CONFIG.scores.coin);
@@ -315,7 +437,8 @@ class SceneGame extends Phaser.Scene {
 
     checkPortal() {
         const P = this.player;
-        const touching = P.z < 0.5 && Math.hypot(P.x - this.portal.x, P.y - this.portal.y) < 0.5;
+        const dz = P.z - this.portal.z;
+        const touching = dz < 0.5 && dz > -0.3 && Math.hypot(P.x - this.portal.x, P.y - this.portal.y) < 0.5;
         if (!touching) {
             this.portalWarned = false;
             return;
@@ -349,9 +472,12 @@ class SceneGame extends Phaser.Scene {
 
         this.time.delayedCall(700, () => {
             this.cameras.main.fadeOut(500);
+            this.uiCam.fadeOut(500);
             this.cameras.main.once('camerafadeoutcomplete', () => {
                 this.scene.start('SceneLevelComplete', {
                     level: this.levelNumber,
+                    seed: this.seed,
+                    name: this.level.name,
                     score: this.score,
                     timeLeft: Math.ceil(this.timeLeft),
                     coins: this.coinsCollected,
@@ -373,6 +499,7 @@ class SceneGame extends Phaser.Scene {
                 level: this.levelNumber,
                 score: this.score,
                 retryScore: this.levelStartScore,
+                seed: this.seed,
                 reason
             });
         });
@@ -382,19 +509,38 @@ class SceneGame extends Phaser.Scene {
 
     createHUD() {
         const style = (color) => ({ font: '20px monospace', fill: color, stroke: '#000000', strokeThickness: 3 });
-        const fixed = (obj) => obj.setScrollFactor(0).setDepth(10000);
+        const add = (obj) => this.inHud(obj.setScrollFactor(0).setDepth(10000));
 
-        this.scoreText = fixed(this.add.text(16, 12, '', style('#00ff00')));
-        this.timeText = fixed(this.add.text(16, 40, '', style('#00ffff')));
-        this.healthText = fixed(this.add.text(16, 68, '', style('#ff4444')));
-        this.levelText = fixed(this.add.text(CONFIG.width - 16, 12, `Level ${this.levelNumber}: ${this.level.name}`, style('#ff00ff')).setOrigin(1, 0));
-        this.coinText = fixed(this.add.text(CONFIG.width - 16, 40, '', style('#ffff00')).setOrigin(1, 0));
-        this.messageText = fixed(this.add.text(CONFIG.width / 2, 120, '', {
+        this.scoreText = add(this.add.text(0, 0, '', style('#00ff00')));
+        this.timeText = add(this.add.text(0, 0, '', style('#00ffff')));
+        this.healthText = add(this.add.text(0, 0, '', style('#ff4444')));
+        this.levelText = add(this.add.text(0, 0, `Level ${this.levelNumber}: ${this.level.name}`, style('#ff00ff')).setOrigin(1, 0));
+        this.coinText = add(this.add.text(0, 0, '', style('#ffff00')).setOrigin(1, 0));
+        this.messageText = add(this.add.text(0, 0, '', {
             font: '24px monospace', fill: '#ffffff', stroke: '#000000', strokeThickness: 4
         }).setOrigin(0.5).setAlpha(0));
 
+        this.layoutHUD();
         this.updateHUD();
-        this.flash(this.level.name);
+        this.flash(`Level ${this.levelNumber}: ${this.level.name}`);
+    }
+
+    // Positions and sizes every HUD element for the current screen size.
+    layoutHUD() {
+        const { width: w, height: h } = this.scale;
+        const s = UI.scaleFor(w, h);
+        const font = (t, px) => t.setFontSize(Math.round(px * s)).setStroke('#000000', Math.max(2, 3 * s));
+        [this.scoreText, this.timeText, this.healthText].forEach((t, i) => font(t, 20).setPosition(16 * s, (12 + 28 * i) * s));
+        [this.levelText, this.coinText].forEach((t, i) => font(t, 20).setPosition(w - 16 * s, (12 + 28 * i) * s));
+        font(this.messageText, 24).setPosition(w / 2, 120 * s);
+        if (this.touchUI) {
+            const t = this.touchUI;
+            t.jump.setPosition(w - 90 * s, h - 90 * s).setRadius(50 * s);
+            font(t.jumpLabel, 18).setPosition(w - 90 * s, h - 90 * s);
+            font(t.hint, 14).setPosition(20 * s, h - 30 * s);
+            t.base.setRadius(50 * s);
+            t.knob.setRadius(22 * s);
+        }
     }
 
     updateHUD() {
@@ -432,12 +578,17 @@ class SceneGame extends Phaser.Scene {
     // Native touch listeners on window (not Phaser pointers) so touches that start in the
     // letterbox bars around the canvas still steer; coordinates are mapped into game space.
     createTouchControls() {
-        const fixed = (obj) => obj.setScrollFactor(0).setDepth(10000);
+        const fixed = (obj) => this.inHud(obj.setScrollFactor(0).setDepth(10000));
         const stickBase = fixed(this.add.circle(0, 0, 50, 0xffffff, 0.12).setVisible(false));
         const stickKnob = fixed(this.add.circle(0, 0, 22, 0xffffff, 0.35).setVisible(false));
-        fixed(this.add.circle(CONFIG.width - 90, CONFIG.height - 90, 50, 0xffffff, 0.15));
-        fixed(this.add.text(CONFIG.width - 90, CONFIG.height - 90, 'JUMP', { font: '18px monospace', fill: '#ffffff' }).setOrigin(0.5));
-        fixed(this.add.text(20, CONFIG.height - 30, 'drag to move', { font: '14px monospace', fill: '#888888' }));
+        this.touchUI = {
+            base: stickBase,
+            knob: stickKnob,
+            jump: fixed(this.add.circle(0, 0, 50, 0xffffff, 0.15)),
+            jumpLabel: fixed(this.add.text(0, 0, 'JUMP', { font: '18px monospace', fill: '#ffffff' }).setOrigin(0.5)),
+            hint: fixed(this.add.text(0, 0, 'drag to move', { font: '14px monospace', fill: '#888888' }))
+        };
+        this.layoutHUD();
 
         const toGame = (t) => ({ x: this.scale.transformX(t.pageX), y: this.scale.transformY(t.pageY) });
         const release = () => {
@@ -451,7 +602,7 @@ class SceneGame extends Phaser.Scene {
             Sfx.unlock();
             for (const t of ev.changedTouches) {
                 const p = toGame(t);
-                if (p.x >= CONFIG.width / 2) {
+                if (p.x >= this.scale.width / 2) {
                     this.jumpQueued = true;
                 } else if (this.stickId === null) {
                     this.stickId = t.identifier;
@@ -467,10 +618,11 @@ class SceneGame extends Phaser.Scene {
                 const p = toGame(t);
                 const vx = p.x - this.stickOrigin.x;
                 const vy = p.y - this.stickOrigin.y;
-                const len = Math.min(50, Math.hypot(vx, vy));
+                const reach = stickBase.radius;
+                const len = Math.min(reach, Math.hypot(vx, vy));
                 const angle = Math.atan2(vy, vx);
                 stickKnob.setPosition(this.stickOrigin.x + Math.cos(angle) * len, this.stickOrigin.y + Math.sin(angle) * len);
-                this.touchVec = { x: Math.cos(angle) * len / 50, y: Math.sin(angle) * len / 50 };
+                this.touchVec = { x: Math.cos(angle) * len / reach, y: Math.sin(angle) * len / reach };
             }
         };
         const onEnd = (ev) => {

@@ -7,13 +7,14 @@ const IsoUtils = {
         };
     },
 
-    // Floor tiles live in a low band so every standing object draws above them.
+    // Ground-level floor tiles live in a low band so every standing object draws above them.
     floorDepth(tileX, tileY) {
         return tileX + tileY;
     },
 
-    // Walls, actors and pickups are sorted together by distance from the back corner.
-    actorDepth(x, y) {
-        return 1000 + (x + y) * 10;
+    // Raised blocks, walls, actors and pickups sort by cell diagonal (tileX + tileY);
+    // within one diagonal blocks (layer 2) draw before objects (layer 6).
+    cellDepth(diagonal, layer) {
+        return 1000 + diagonal * 10 + layer;
     }
 };

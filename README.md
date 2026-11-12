@@ -12,8 +12,10 @@ You are **Rusty**, a maintenance robot on a leaking space station.
 
 - Collect every **Power Core** — the **Portal** only opens once all are collected.
 - **Spark Drones** and **Leak Blobs** cost a life on contact; land on them from a jump to destroy them.
+- **Raised platforms**: a jump climbs one height step; dropping down is free. Cores favour high ground.
 - **Pits** cost a life and respawn you on the last safe tile. Jumps clear gaps up to 2 tiles.
-- 3 lives and a time limit per level. 3 levels.
+- 3 lives and a time limit per level. **Endless**: every level is generated and harder than the last.
+- The view fills any screen size/orientation; small levels are shown whole, large ones follow you.
 
 | Action | Keyboard | Touch |
 |---|---|---|
@@ -32,7 +34,7 @@ Requires Node.js 18+.
 cd game
 npm install      # also copies Phaser into vendor/
 npm start        # http://localhost:3000
-npm test         # syntax check + level validation (run by CI)
+npm test         # syntax, physics and generated-level validation (run by CI)
 npm run build    # -> build/web/
 ```
 
@@ -42,7 +44,8 @@ game/
 ├── scripts/check.js         # CI checks: JS syntax, script tags, level solvability
 ├── src/
 │   ├── config.js            # all tunables (speeds, jump, scoring)
-│   ├── levels.js            # ASCII level maps + parser
+│   ├── levels.js            # procedural level generator + solvability model
+│   ├── blocks.js            # textures for raised terrain and walls
 │   ├── audio.js             # synthesised SFX and music
 │   ├── boot.js              # Phaser game setup
 │   ├── utils/IsoUtils.js    # projection and depth sorting
@@ -52,19 +55,13 @@ game/
 
 ### How it works
 
-Game state lives in tile space: `(x, y)` on the grid plus height `z`. Each frame, sprites are projected with `IsoUtils.cartToIso` and depth-sorted by `x + y`. There is no physics engine. Walls block movement with a circle-vs-grid test. Jumping is a simple vertical velocity with gravity, and falling is checked against the tile under the player's centre.
+Game state lives in tile space: `(x, y)` on the grid plus height `z`. Each cell is a pit, a wall, or floor at a height level (1 level = 0.5 z). Anything above the player's feet blocks movement; the ground is the highest surface under the player's footprint. Sprites are projected with `IsoUtils.cartToIso` and depth-sorted by cell diagonal, after every cell the actor stands on or above. World and HUD use separate cameras, so the world can zoom to fit the screen.
 
-### Adding a level
+### Level generation
 
-Add an entry to `LEVELS` in `game/src/levels.js`:
+`LevelGen.generate(level, seed)` is deterministic: a run picks a random seed, retries replay the same level. All difficulty knobs (size, max height, terraces, chasms with stepping pillars, holes, walls, cores, enemies and their speed, time slack) are in `difficulty()` in `game/src/levels.js` and ramp up to level 16; enemy speed keeps rising to level 21.
 
-```
-#  wall          .  floor        (space)  pit
-S  start         E  exit portal  C  power core
-D  drone (patrols along x)       B  blob (patrols along y)
-```
-
-The border must be walls. `npm test` fails if any core or the exit can't be reached by walking or by jumping gaps of up to 2 tiles.
+Validation uses a movement model matching the physics (climb ≤1 level, jump 1 pit gap onto ≤+1, 2 pit gaps onto ≤ same height). Cells reachable from the start that can't get back are turned into pits, so the player can't soft-lock; cores, exit and enemies are placed only in the remaining region. `npm test` checks 1600 generated levels and that the jump height clears one level but not two.
 
 ## License
 

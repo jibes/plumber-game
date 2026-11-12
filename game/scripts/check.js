@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Static checks run in CI: JS syntax of every source file, and that every level is valid and completable.
+// Static checks run in CI: JS syntax, script tags, physics assumptions, and that generated levels are completable.
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
@@ -25,45 +25,50 @@ for (const [, src] of html.matchAll(/<script src="([^"]+)"/g)) {
     if (!fs.existsSync(path.join(root, src))) fail(`index.html references missing ${src} (run npm install for vendor/)`);
 }
 
-// 3. Levels: valid, and start can reach every core and the exit by walking or jumping up to 2 pit tiles
-const { LEVELS, parseLevel } = require('../src/levels.js');
-const MAX_JUMP_GAP = 2;
-LEVELS.forEach((def) => {
-    let level;
-    try {
-        level = parseLevel(def);
-    } catch (e) {
-        return fail(e.message);
-    }
-    const { grid, start } = level;
-    const key = (x, y) => `${x},${y}`;
-    const floor = (x, y) => grid[y] && grid[y][x] === '.';
-    const seen = new Set([key(start.x, start.y)]);
-    const queue = [start];
-    while (queue.length) {
-        const { x, y } = queue.shift();
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            for (let gap = 0; gap <= MAX_JUMP_GAP; gap++) {
-                const between = [...Array(gap)].map((_, i) => grid[y + dy * (i + 1)][x + dx * (i + 1)]);
-                if (!between.every(t => t === ' ')) break;
-                const nx = x + dx * (gap + 1), ny = y + dy * (gap + 1);
-                if (floor(nx, ny) && !seen.has(key(nx, ny))) {
-                    seen.add(key(nx, ny));
-                    queue.push({ x: nx, y: ny });
-                }
-            }
+// 3. Physics assumptions the generator relies on: a jump clears one terrain level but not two.
+const { CONFIG } = require('../src/config.js');
+const peak = CONFIG.jumpVelocity ** 2 / (2 * CONFIG.gravity);
+if (!(peak > CONFIG.levelZ + 0.2 && peak + CONFIG.stepTolerance < 2 * CONFIG.levelZ)) {
+    fail(`jump peak ${peak.toFixed(2)} must clear 1 level (${CONFIG.levelZ}) but not 2`);
+}
+
+// 4. Generated levels: deterministic, and every core, the exit and every enemy are in the safe region,
+//    which must be reachable from the start and able to return to it.
+const { LevelGen } = require('../src/levels.js');
+const SEEDS = 40, LEVELS = 40;
+let count = 0;
+for (let seed = 0; seed < SEEDS; seed++) {
+    for (let n = 1; n <= LEVELS; n++) {
+        const tag = `seed ${seed} level ${n}`;
+        let level;
+        try {
+            level = LevelGen.generate(n, seed);
+        } catch (e) {
+            fail(`${tag}: ${e.message}`);
+            continue;
         }
+        if (LevelGen.toAscii(LevelGen.generate(n, seed)) !== LevelGen.toAscii(level)) fail(`${tag}: not deterministic`);
+        const { grid, width: W, start } = level;
+        const { safe } = LevelGen.safeRegion(grid, start);
+        const inSafe = (p) => safe.has(p.y * W + p.x);
+        [...level.coins, level.exit].forEach(p => { if (!inSafe(p)) fail(`${tag}: ${p.x},${p.y} unreachable`); });
+        level.enemies.forEach(e => {
+            if (!inSafe(e)) fail(`${tag}: enemy at ${e.x},${e.y} outside safe region`);
+            const [dx, dy] = e.type === 'drone' ? [1, 0] : [0, 1];
+            const h = grid[e.y][e.x];
+            if (grid[e.y + dy][e.x + dx] !== h && grid[e.y - dy][e.x - dx] !== h) fail(`${tag}: ${e.type} has no room to patrol`);
+        });
+        for (const key of LevelGen.distances(grid, start.x, start.y).keys()) {
+            if (!safe.has(key)) fail(`${tag}: one-way pocket at ${key % W},${Math.floor(key / W)}`);
+        }
+        count++;
     }
-    [...level.coins, level.exit].forEach(t => {
-        if (!seen.has(key(t.x, t.y))) fail(`${level.name}: tile ${t.x},${t.y} is unreachable`);
-    });
-    level.enemies.forEach(e => {
-        if (!floor(e.x, e.y)) return fail(`${level.name}: enemy at ${e.x},${e.y} not on floor`);
-        const [dx, dy] = e.type === 'drone' ? [1, 0] : [0, 1];
-        if (!floor(e.x + dx, e.y + dy) && !floor(e.x - dx, e.y - dy)) fail(`${level.name}: ${e.type} at ${e.x},${e.y} has no room to patrol`);
-    });
-    console.log(`ok   ${level.name}: ${level.width}x${level.height}, ${level.coins.length} cores, ${level.enemies.length} enemies`);
-});
+}
+console.log(`ok   ${count} generated levels (${SEEDS} seeds x ${LEVELS} levels)`);
+for (const n of [1, 5, 15]) {
+    const l = LevelGen.generate(n, 1);
+    console.log(`\nlevel ${n} "${l.name}" ${l.width}x${l.height}, ${l.coins.length} cores, ${l.enemies.length} enemies, ${l.time}s\n${LevelGen.toAscii(l)}`);
+}
 
 if (failed) process.exit(1);
 console.log('All checks passed');

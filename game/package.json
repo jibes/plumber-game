@@ -9,7 +9,7 @@
     "dev": "serve . -p 3000",
     "test": "node scripts/check.js",
     "build": "npm run build:web",
-    "build:web": "rm -rf build/web && mkdir -p build/web && cp -r index.html src vendor build/web/ && echo 'Web build ready in build/web/'",
+    "build:web": "rm -rf build/web && mkdir -p build/web && cp -r index.html src vendor build/web/ && sed -i \"s/\\.js\\\"/.js?v=$(date +%s)\\\"/\" build/web/index.html && echo 'Web build ready in build/web/'",
     "build:android": "npm run build:web && rm -rf cordova/www && cp -r build/web cordova/www && cd cordova && npm install && npx cordova prepare android && npx cordova build android",
     "clean": "rm -rf build/ vendor/ node_modules/ cordova/node_modules/ cordova/platforms/ cordova/plugins/ cordova/www/"
   },

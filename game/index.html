@@ -71,6 +71,16 @@
     
     <div id="game-container"></div>
 
+    <!-- Show uncaught errors on screen instead of leaving a black canvas -->
+    <div id="error" style="display:none;position:absolute;left:8px;right:8px;bottom:8px;color:#ff5555;font:14px monospace;white-space:pre-wrap;z-index:10"></div>
+    <script>
+        window.addEventListener('error', (e) => {
+            const box = document.getElementById('error');
+            box.style.display = 'block';
+            box.textContent += `Error: ${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})\n`;
+        });
+    </script>
+
     <!-- Phaser is vendored by `npm install` (postinstall) so the game also works offline / in the APK -->
     <script src="vendor/phaser.min.js"></script>
 

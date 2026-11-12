@@ -23,6 +23,7 @@ class SceneGame extends Phaser.Scene {
         this.jumpQueued = false;
         this.stickId = null;
         this.touchVec = { x: 0, y: 0 };
+        this.touchUI = null; // previous run's controls were destroyed with the scene
     }
 
     create() {
